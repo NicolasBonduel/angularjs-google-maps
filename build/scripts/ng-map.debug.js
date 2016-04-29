@@ -1,5 +1,5 @@
 /**
- * AngularJS Google Maps Ver. 1.16.8
+ * AngularJS Google Maps Ver. 1.17.2
  *
  * The MIT License (MIT)
  * 
@@ -128,6 +128,9 @@ angular.module('ngMap', []);
       for (var k2 in vm.map.customMarkers) {
         bounds.extend(vm.map.customMarkers[k2].getPosition());
       }
+	  if (vm.mapOptions.maximumZoom) {
+		  vm.enableMaximumZoomCheck = true; //enable zoom check after resizing for markers
+	  }
       vm.map.fitBounds(bounds);
     };
 
@@ -236,6 +239,18 @@ angular.module('ngMap', []);
           $parse($attrs.mapInitialized)($scope, {map: vm.map});
         }
       });
+	  
+	  //add maximum zoom listeners if zoom-to-include-markers and and maximum-zoom are valid attributes
+	  if (mapOptions.zoomToIncludeMarkers && mapOptions.maximumZoom) {
+	    google.maps.event.addListener(vm.map, 'zoom_changed', function() {
+          if (vm.enableMaximumZoomCheck == true) {
+			vm.enableMaximumZoomCheck = false;
+	        google.maps.event.addListenerOnce(vm.map, 'bounds_changed', function() { 
+		      vm.map.setZoom(Math.min(mapOptions.maximumZoom, vm.map.getZoom())); 
+		    });
+	  	  }
+	    });
+	  }
     };
 
     $scope.google = google; //used by $scope.eval to avoid eval()
@@ -257,7 +272,14 @@ angular.module('ngMap', []);
     vm.eventListeners = {};
 
     if (options.lazyInit) { // allows controlled initialization
-      vm.map = {id: $attrs.id}; //set empty, not real, map
+      // parse angular expression for dynamic ids
+      if (!!$attrs.id && $attrs.id.startsWith('{{') && $attrs.id.endsWith('}}')) {
+        var idExpression = $attrs.id.slice(2,-2);
+        var mapId = $parse(idExpression)($scope);
+      } else {
+        var mapId = $attrs.id;
+      }
+      vm.map = {id: mapId}; //set empty, not real, map
       NgMap.addMap(vm);
     } else {
       vm.initializeMap();
@@ -560,24 +582,27 @@ angular.module('ngMap', []);
       console.log("custom-marker options", options);
       var customMarker = new CustomMarker(options);
 
-      
-	  scope.$watch('[' + varsToWatch.join(',') + ']', function() {
-	    customMarker.setContent(orgHtml, scope);
-	  });
+      $timeout(function() { //apply contents, class, and location after it is compiled
 
-	  customMarker.setContent(element[0].innerHTML, scope);
-	  var classNames = element[0].firstElementChild.className;
-	  customMarker.addClass('custom-marker');
-	  customMarker.addClass(classNames);
-	  console.log('customMarker', customMarker, 'classNames', classNames);
+        scope.$watch('[' + varsToWatch.join(',') + ']', function() {
+          customMarker.setContent(orgHtml, scope);
+        }, true);
 
-	  if (!(options.position instanceof google.maps.LatLng)) {
-	    NgMap.getGeoLocation(options.position).then(
-		  function(latlng) {
-		    customMarker.setPosition(latlng);
-		  }
-	    );
-	  }
+        customMarker.setContent(element[0].innerHTML, scope);
+        var classNames = element[0].firstElementChild.className;
+        customMarker.addClass('custom-marker');
+        customMarker.addClass(classNames);
+        console.log('customMarker', customMarker, 'classNames', classNames);
+
+        if (!(options.position instanceof google.maps.LatLng)) {
+          NgMap.getGeoLocation(options.position).then(
+                function(latlng) {
+                  customMarker.setPosition(latlng);
+                }
+          );
+        }
+
+      });
 
       console.log("custom-marker events", "events");
       for (var eventName in events) { /* jshint ignore:line */
@@ -1554,7 +1579,7 @@ angular.module('ngMap', []);
     return {
       restrict: 'AE',
       controller: '__MapController',
-      conrollerAs: 'ngmap'
+      controllerAs: 'ngmap'
     };
   };
 
@@ -2807,10 +2832,27 @@ angular.module('ngMap', []);
     return map;
   };
 
-  var find = function(el) { //jshint ignore:line
+  var findById = function(el, id) {
     var notInUseMap;
     for (var i=0; i<mapInstances.length; i++) {
       var map = mapInstances[i];
+      if (map.id == id && !map.inUse) {
+        var mapDiv = map.getDiv();
+        el.appendChild(mapDiv);
+        notInUseMap = map;
+        break;
+      }
+    }
+    return notInUseMap;
+  };
+
+  var findUnused = function(el) { //jshint ignore:line
+    var notInUseMap;
+    for (var i=0; i<mapInstances.length; i++) {
+      var map = mapInstances[i];
+      if (map.id) {
+        continue;
+      }
       if (!map.inUse) {
         var mapDiv = map.getDiv();
         el.appendChild(mapDiv);
@@ -2828,7 +2870,7 @@ angular.module('ngMap', []);
    * @return map instance for the given element
    */
   var getMapInstance = function(el) {
-    var map = find(el);
+    var map = findById(el, el.id) || findUnused(el);
     if (!map) {
       map = add(el);
     } else {
@@ -2923,15 +2965,15 @@ angular.module('ngMap', []);
   /**
    * @memberof NgMap
    * @function getMap
-   * @param {Hash} options optional, e.g., {id: 'foo, timeout: 5000}
+   * @param {String} optional, id e.g., 'foo'
    * @returns promise
    */
-  var getMap = function(options) {
-    options = options || {};
-    var deferred = $q.defer();
+  var getMap = function(id) {
+    id = typeof id === 'object' ? id.id : id;
+    id = id || 0;
 
-    var id = options.id || 0;
-    var timeout = options.timeout || 2000;
+    var deferred = $q.defer();
+    var timeout = 2000;
 
     function waitForMap(timeElapsed){
       if(mapControllers[id]){
